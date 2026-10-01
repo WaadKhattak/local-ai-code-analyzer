@@ -1,97 +1,103 @@
-import sys
+import json
 import os
+import sys
 import requests
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 console = Console()
 
-# Host bridge configuration for Ollama API
-OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://192.168.117.1:11434")
+# Default to localhost for portability across all machines
+OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://localhost:11434")
+MODEL_NAME = "qwen2.5-coder:7b-instruct-q4_K_M"
 
-def auto_select_model():
-    """Detect available local models and select the optimal coding model."""
-    if "MODEL_NAME" in os.environ:
-        return os.environ["MODEL_NAME"]
-    
-    try:
-        res = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-        if res.status_code == 200:
-            models = res.json().get("models", [])
-            if models:
-                for m in models:
-                    name = m.get("name", "")
-                    if "qwen2.5-coder:7b" in name:
-                        return name
-                return models[0]["name"]
-    except Exception:
-        pass
-    
-    return "qwen2.5-coder:7b"
+PROMPT_TEMPLATE = """You are an expert security code reviewer.
+Analyze the code below for security vulnerabilities, bugs and bad practices.
+Each line of the code starts with its line number (like "3: code").
 
-MODEL_NAME = auto_select_model()
-OLLAMA_URL = f"{OLLAMA_BASE}/api/generate"
+Reply with ONLY valid JSON in exactly this shape:
+{
+  "issues": [
+    {
+      "name": "short issue name",
+      "cwe": "CWE-89",
+      "severity": "HIGH or MEDIUM or LOW",
+      "line": 12,
+      "explanation": "1-2 simple sentences",
+      "bad_code": "the vulnerable line, without the line number",
+      "fixed_code": "the secure replacement code"
+    }
+  ]
+}
+If there are no problems, reply {"issues": []}.
 
-PROMPT_TEMPLATE = """
-You are an expert static analysis code reviewer engine. 
-Analyze the following source code for bugs, quality issues, efficiency bottlenecks, structural anti-patterns, and best practices.
-
-Provide a clear, structured response containing:
-1. Identified Issues & Structural Anti-patterns
-2. Severity Assessment (Low, Medium, High, Critical)
-3. Refactored Code Recommendations
-
-Source Code to Analyze:
-```{code}```
+CODE:
+<<CODE>>
 """
 
-def analyze_file(file_path):
-    if not os.path.exists(file_path):
-        console.print(f"[bold red]Error:[/bold red] File '{file_path}' not found.")
+def analyze_file(filepath):
+    if not os.path.exists(filepath):
+        console.print(f"[bold red]Error:[/bold red] File '{filepath}' not found.")
         sys.exit(1)
 
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         code_content = f.read()
 
-    console.print(
-        Panel(
-            f"[bold cyan]Target File:[/bold cyan] {file_path}\n"
-            f"[bold yellow]Selected Model:[/bold yellow] {MODEL_NAME}\n"
-            f"[bold green]Endpoint:[/bold green] {OLLAMA_URL}",
-            title="Local AI Code Analysis Engine",
-            border_style="cyan"
-        )
-    )
+    console.print(Panel(f"Target File: {filepath}\nModel: {MODEL_NAME}\nEndpoint: {OLLAMA_BASE}", title="Local AI Code Analyzer", border_style="cyan"))
+    syntax = Syntax(code_content, "python", theme="monokai", line_numbers=True)
+    console.print(Panel(syntax, title="Source Code", border_style="blue"))
 
-    formatted_prompt = PROMPT_TEMPLATE.format(code=code_content)
+    # Line numbering for accurate AI vulnerability tagging
+    numbered = "\n".join(f"{i}: {line}" for i, line in enumerate(code_content.splitlines(), start=1))
+    formatted_prompt = PROMPT_TEMPLATE.replace("<<CODE>>", numbered)
 
     payload = {
         "model": MODEL_NAME,
         "prompt": formatted_prompt,
-        "stream": False
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.1},
     }
 
     try:
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
-            progress.add_task(description=f"Running inference via local GPU ({MODEL_NAME})...", total=None)
-            response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+        with console.status("[bold green]Analyzing code for security vulnerabilities..."):
+            response = requests.post(f"{OLLAMA_BASE}/api/generate", json=payload, timeout=120)
+            response.raise_for_status()
+            raw_response = response.json().get("response", "{}")
+            data = json.loads(raw_response)
 
-        if response.status_code == 200:
-            result = response.json().get("response", "")
-            
-            # Render syntax-highlighted source code
-            syntax = Syntax(code_content, "python", theme="monokai", line_numbers=True)
-            console.print(Panel(syntax, title="Source Code"))
-
-            # Render AI analysis report
-            console.print(Panel(result, title="[bold green]AI Analysis Report[/bold green]", border_style="green"))
-        else:
-            console.print(f"[bold red]API Error {response.status_code}:[/bold red] {response.text}")
+        display_results(data)
 
     except Exception as e:
-        console.print(f"[bold red]Connection Failed:[/bold red] {str(e)}")
+        console.print(f"[bold red]Analysis Failed:[/bold red] {e}")
+
+def display_results(data):
+    issues = data.get("issues", [])
+    if not issues:
+        console.print(Panel("[bold green]No security issues detected![/bold green]", title="Audit Summary", border_style="green"))
+        return
+
+    table = Table(title="Security Analysis Findings", show_header=True, header_style="bold magenta")
+    table.add_column("Line", style="dim", width=6)
+    table.add_column("Issue Name", style="bold")
+    table.add_column("CWE", style="yellow")
+    table.add_column("Severity", style="bold red")
+    table.add_column("Explanation")
+
+    for issue in issues:
+        sev = issue.get("severity", "LOW")
+        sev_color = "red" if sev == "HIGH" else "yellow" if sev == "MEDIUM" else "green"
+        table.add_row(
+            str(issue.get("line", "-")),
+            issue.get("name", "Unknown"),
+            issue.get("cwe", "N/A"),
+            f"[{sev_color}]{sev}[/{sev_color}]",
+            issue.get("explanation", "")
+        )
+
+    console.print(table)
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "samples/demo.py"
