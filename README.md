@@ -15,3 +15,8 @@ An open-source static application security and quality analysis harness powered 
 ```bash
 pip install rich requests
 python3 src/main.py samples/demo.py
+
+## 🚀 Future Roadmap
+- **Optional Web/Desktop GUI:** Introduce a user-friendly interface using **Streamlit** or **Gradio** for visual inspection and file uploading.
+- **CI/CD Integration:** GitHub Actions / GitLab CI pipeline integration for automated pull-request scanning.
+- **Custom Rule Engine:** Allow security teams to define custom YAML/JSON rule templates for specific vulnerability patterns.
